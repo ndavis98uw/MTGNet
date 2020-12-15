@@ -5,7 +5,6 @@ import h5py
 from glob import glob
 import os
 import pickle
-COLOR_TO_INT = {'W': 0, 'U': 1, 'B': 2, 'R': 3, 'G': 4, 'C': 5}
 IMG_DIR = 'card_images'
 WIDTH = 620
 HEIGHT = 450
@@ -31,7 +30,6 @@ def generate_labels(label_file):
     return label_dict
 
 
-
 def types_tally(col_types_file):
     col_types = np.load(col_types_file)
     types_count = {}
@@ -42,6 +40,7 @@ def types_tally(col_types_file):
             types_count[single_type] += 1
     return types_count
 
+
 def cmc_to_int(cmc_file, out):
     cmc = np.load(cmc_file)
     int_cmc = []
@@ -50,15 +49,25 @@ def cmc_to_int(cmc_file, out):
     np.save(out, int_cmc)
 
 
-def color_to_int(single_color_file, out):
-    single_color = np.load(single_color_file, allow_pickle=True)
+def color_to_int(color_file, out, label_out):
+    color = np.load(color_file, allow_pickle=True)
     int_color = []
-    for c in single_color:
-        if len(c) == 1:
-            int_color.append(COLOR_TO_INT[c[0]])
-        else:
-            int_color.append(COLOR_TO_INT['C'])
-    np.save(out, int_color)
+    color_labels = {}
+    label = 0
+    for c in color:
+        c_str = ""
+        for el in c:
+            c_str = c_str + el
+        if c_str not in color_labels:
+            color_labels[c_str] = label
+            label = label + 1
+        int_color.append(color_labels[c_str])
+    # np.save(out, int_color)
+    print(color_labels)
+    if label_out:
+        with open(label_out, 'wb') as handle:
+            pickle.dump(color_labels, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
 
 
 def filter_data(colors_file, ids_file, cmc_file, types_file, names_file, boolean_list, colors_out=None, ids_out=None,
@@ -96,13 +105,13 @@ def filter_data(colors_file, ids_file, cmc_file, types_file, names_file, boolean
 
 
 def filter_process(colors_file, ids_file, cmc_file, types_file, names_file, boolean_list,  colors_out=None, ids_out=None,
-                cmc_out=None, types_out=None, names_out=None):
+                cmc_out=None, types_out=None, names_out=None, label_out=None):
     filter_data(colors_file, ids_file, cmc_file, types_file, names_file, boolean_list,  colors_out=colors_out, ids_out=ids_out,
                 cmc_out=cmc_out, types_out=types_out, names_out=names_out)
     if colors_out:
-        color_to_int(colors_out, colors_out)
+        color_to_int(colors_out, colors_out, label_out)
     else:
-        color_to_int(colors_file, colors_out)
+        color_to_int(colors_file, colors_out, label_out)
     if cmc_out:
         cmc_to_int(cmc_out, cmc_out)
     else:
@@ -142,23 +151,44 @@ def reduce_images(height, width, in_dir, out_dir):
     for img in images:
         image = cv2.imread(img)
         image = cv2.resize(image, (width, height), interpolation=cv2.INTER_CUBIC)
-        fname = img.split('/')[1]
-        cv2.imwrite(out_dir + '/' + fname, image)
+        fname = img.split('\\')[1]
+        cv2.imwrite(out_dir + '\\' + fname, image)
 
 
-# colors = np.load('raw_data/colors.npy', allow_pickle=True)
-# filter_process('raw_data/colors.npy', 'raw_data/ids.npy', 'raw_data/cmc.npy', 'raw_data/types.npy', 'raw_data/names.npy', list(map(lambda c: len(c) < 3, colors)),
-#                 colors_out='dualcolor/colors.npy', ids_out='dualcolor/ids.npy', cmc_out='dualcolor/cmc.npy', types_out='dualcolor/types.npy', names_out='monocolor/names.npy')
-# types_count = types_tally('monocolor/types.npy')
-# types = np.load('monocolor/types.npy')
-# filter_data('monocolor/colors.npy', 'monocolor/ids.npy', 'monocolor/cmc.npy', 'monocolor/types.npy', 'monocolor/names.npy', list(map(lambda t: types_count[t] >= 10, types)),
-#                 colors_out='types_10/colors.npy', ids_out='types_10/ids.npy', cmc_out='types_10/cmc.npy', types_out='types_10/types.npy', names_out='types_10/names.npy')
-# filter_data('monocolor/colors.npy', 'monocolor/ids.npy', 'monocolor/cmc.npy', 'monocolor/types.npy', 'monocolor/names.npy', list(map(lambda t: types_count[t] >= 50, types)),
-#                 colors_out='types_50/colors.npy', ids_out='types_50/ids.npy', cmc_out='types_50/cmc.npy', types_out='types_50/types.npy', names_out='types_50/names.npy')
-# filter_data('monocolor/colors.npy', 'monocolor/ids.npy', 'monocolor/cmc.npy', 'monocolor/types.npy', 'monocolor/names.npy', list(map(lambda t: types_count[t] >= 100, types)),
-#                 colors_out='types_100/colors.npy', ids_out='types_100/ids.npy', cmc_out='types_100/cmc.npy', types_out='types_100/types.npy', names_out='types_100/names.npy')
-# reduce_images(HEIGHT, WIDTH, 'card_images', 'reduced_images')
-dict = generate_labels('monocolor/types_100/types.npy')
-with open('monocolor/types_100/types.pickle', 'wb') as handle:
-    pickle.dump(dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+def test_train_split(label_dir, label_type, test_train_split):
+    ids = np.load(label_dir + '/ids.npy')
+    labels = np.load(label_dir + '/' + label_type + '.npy')
+    indices = np.arange(ids.shape[0])
+    np.random.shuffle(indices)
+    train_indices = indices[:int(len(indices) * test_train_split)]
+    np.save(label_dir + '\\' + 'ids_train.npy', ids[train_indices])
+    np.save(label_dir + '\\' + label_type + '_train.npy', labels[train_indices])
+    test_indices = indices[int(len(indices) * test_train_split):]
+    np.save(label_dir + '\\' + 'ids_test.npy', ids[test_indices])
+    np.save(label_dir + '\\' + label_type + '_test.npy', labels[test_indices])
+
+
+colors = np.load('raw_data_new/colors.npy', allow_pickle=True)
+
+filter_process('raw_data_new/colors.npy', 'raw_data_new/ids.npy', 'raw_data_new/cmc.npy', 'raw_data_new/types.npy', 'raw_data_new/names.npy', list(map(lambda c: len(c) < 2, colors)),
+                colors_out='monocolor_new/colors.npy', ids_out='monocolor_new/ids.npy', cmc_out='monocolor_new/cmc.npy', types_out='monocolor_new/types.npy', names_out='monocolor_new/names.npy')
+# types_count = types_tally('monocolor_new/types.npy')
+# types = np.load('monocolor_new/types.npy')
+# filter_data('monocolor_new/colors.npy', 'monocolor_new/ids.npy', 'monocolor_new/cmc.npy', 'monocolor_new/types.npy', 'monocolor_new/names.npy', list(map(lambda t: types_count[t] >= 100, types)),
+#                 colors_out='monocolor_new/types_100/colors.npy', ids_out='monocolor_new/types_100/ids.npy', cmc_out='monocolor_new/types_100/cmc.npy', types_out='monocolor_new/types_100/types.npy', names_out='monocolor_new/types_100/names.npy')
+# reduce_images(315, 434, 'card_images_new', 'extra_reduced_images_new')
+#dict = generate_labels('monocolor_new/colors.npy')
+print("hello")
+# with open('monocolor_new/colors.pickle', 'wb') as handle:
+#     pickle.dump(dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+filter_process('raw_data_new/colors.npy', 'raw_data_new/ids.npy', 'raw_data_new/cmc.npy', 'raw_data_new/types.npy', 'raw_data_new/names.npy', list(map(lambda c: len(c) < 3, colors)),
+                colors_out='dualcolor_new/colors.npy', ids_out='dualcolor_new/ids.npy', cmc_out='dualcolor_new/cmc.npy', types_out='dualcolor_new/types.npy', names_out='dualcolor_new/names.npy')
+# filter_data('dualcolor_new/colors.npy', 'dualcolor_new/ids.npy', 'dualcolor_new/cmc.npy', 'dualcolor_new/types.npy', 'dualcolor_new/names.npy', list(map(lambda t: types_count[t] >= 100, types)),
+#                 colors_out='dualcolor_new/types_100/colors.npy', ids_out='dualcolor_new/types_100/ids.npy', cmc_out='dualcolor_new/types_100/cmc.npy', types_out='dualcolor_new/types_100/types.npy', names_out='dualcolor_new/types_100/names.npy')
+# filter_data('dualcolor_new/colors.npy', 'dualcolor_new/ids.npy', 'dualcolor_new/cmc.npy', 'dualcolor_new/types.npy', 'dualcolor_new/names.npy', list(map(lambda t: types_count[t] >= 400, types)),
+#                 colors_out='dualcolor_new/types_400/colors.npy', ids_out='dualcolor_new/types_400/ids.npy', cmc_out='dualcolor_new/types_400/cmc.npy', types_out='dualcolor_new/types_400/types.npy', names_out='dualcolor_new/types_400/names.npy')
+# test_train_split('monocolor_new', 'colors', .8)
+# test_train_split('monocolor_new/types_100', 'types', .8)
+# test_train_split('dualcolor_new', 'colors', .8)
+# test_train_split('dualcolor_new/types_100', 'types', .8)
 

@@ -3,15 +3,16 @@ import numpy as np
 import torch
 import pt_util
 import MTGnet
+import pickle
 import torch.optim as optim
-from data_fetcher import data_fetcher
+from data_fetcher import data_fetcher, test_fetcher
 
 
 def train(model, device, train_loader, optimizer, epoch, log_interval):
     model.train()
     losses = []
     for batch_idx, (data, label) in enumerate(train_loader):
-        data, label = data.to(device), label.to(device)
+        data, label = data.to(device), label.to(device=device, dtype=torch.int64)
         optimizer.zero_grad()
         output = model(data)
         loss = model.loss(output, label)
@@ -33,7 +34,7 @@ def test(model, device, test_loader, log_interval=None):
 
     with torch.no_grad():
         for batch_idx, (data, label) in enumerate(test_loader):
-            data, label = data.to(device), label.to(device)
+            data, label = data.to(device), label.to(device=device, dtype=torch.int64)
             output = model(data)
             test_loss_on = model.loss(output, label, reduction='sum').item()
             test_loss += test_loss_on
@@ -54,69 +55,88 @@ def test(model, device, test_loader, log_interval=None):
         test_loss, correct, len(test_loader.dataset), test_accuracy))
     return test_loss, test_accuracy
 
-BATCH_SIZE = 320
-TEST_BATCH_SIZE = 12
-EPOCHS = 30
-LEARNING_RATE = 0.05
-MOMENTUM = 0.9
-USE_CUDA = True
-SEED = 0
-PRINT_INTERVAL = 100
-WEIGHT_DECAY = 0.0005
 
-EXPERIMENT_VERSION = "0.4" # increment this to start a new experiment
-LOG_PATH = 'logs/' + EXPERIMENT_VERSION + '/'
+def network_run(label_dir, is_color, batch_size, learning_rate, weight_decay, epochs, version, name):
+    if name == '__main__':
+        BATCH_SIZE = batch_size
+        TEST_BATCH_SIZE = 15
+        EPOCHS = epochs
+        LEARNING_RATE = learning_rate
+        MOMENTUM = 0.9
+        USE_CUDA = True
+        SEED = 0
+        PRINT_INTERVAL = 10
+        WEIGHT_DECAY = weight_decay
 
-# Now the actual training code
-use_cuda = USE_CUDA and torch.cuda.is_available()
+        EXPERIMENT_VERSION = version  # increment this to start a new experiment
+        LOG_PATH = 'logs/' + EXPERIMENT_VERSION + '/'
 
-#torch.manual_seed(SEED)
+        # Now the actual training code
+        use_cuda = USE_CUDA and torch.cuda.is_available()
 
-device = torch.device("cuda" if use_cuda else "cpu")
-print('Using device', device)
-import multiprocessing
-print('num cpus:', multiprocessing.cpu_count())
+        # torch.manual_seed(SEED)
 
-kwargs = {'num_workers': multiprocessing.cpu_count(),
-          'pin_memory': True} if use_cuda else {}
+        device = torch.device("cuda" if use_cuda else "cpu")
+        print('Using device', device)
+        import torch.multiprocessing as multiprocessing
+        print('num cpus:', 4)
 
-class_names, data_train, data_test = data_fetcher('monocolor/types_100', 'reduced_images', 'types')
+        kwargs = {'num_workers': 4,
+                  'pin_memory': True} if use_cuda else {}
+        class_names, data_train, data_val = data_fetcher(label_dir, 'extra_reduced_images_new', is_color=is_color)
+        data_test = test_fetcher(label_dir, 'extra_reduced_images_new', is_color=is_color)
 
-train_loader = torch.utils.data.DataLoader(data_train, batch_size=BATCH_SIZE,
-                                           shuffle=True, **kwargs)
-test_loader = torch.utils.data.DataLoader(data_test, batch_size=TEST_BATCH_SIZE,
-                                          shuffle=False, **kwargs)
+        print(class_names)
+        train_loader = torch.utils.data.DataLoader(data_train, batch_size=BATCH_SIZE,
+                                                   shuffle=True, **kwargs)
+        val_loader = torch.utils.data.DataLoader(data_val, batch_size=TEST_BATCH_SIZE,
+                                                  shuffle=False, **kwargs)
+        test_loader = torch.utils.data.DataLoader(data_test, batch_size=TEST_BATCH_SIZE,
+                                                  shuffle=False, **kwargs)
 
-model = MTGnet.MTGNet().to(device)
-optimizer = optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
-start_epoch = model.load_last_model(LOG_PATH)
+        model = MTGnet.MTGNet().to(device)
 
-train_losses, test_losses, test_accuracies = pt_util.read_log(LOG_PATH + 'log.pkl', ([], [], []))
-test_loss, test_accuracy = test(model, device, test_loader)
+        optimizer = optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
+        start_epoch = model.load_last_model(LOG_PATH)
 
-test_losses.append((start_epoch, test_loss))
-test_accuracies.append((start_epoch, test_accuracy))
-try:
-    for epoch in range(start_epoch, EPOCHS + 1):
-        train_loss = train(model, device, train_loader, optimizer, epoch, PRINT_INTERVAL)
+        train_losses, test_losses, test_accuracies = pt_util.read_log(LOG_PATH + 'log.pkl', ([], [], []))
+        val_losses, val_accuracies = [], []
+
         test_loss, test_accuracy = test(model, device, test_loader)
-        train_losses.append((epoch, train_loss))
-        test_losses.append((epoch, test_loss))
-        test_accuracies.append((epoch, test_accuracy))
-        pt_util.write_log(LOG_PATH + 'log.pkl', (train_losses, test_losses, test_accuracies))
-        model.save_best_model(test_accuracy, LOG_PATH + '%03d.pt' % epoch)
+        val_loss, val_accuracy = test(model, device, val_loader)
+
+        test_losses.append((start_epoch, test_loss))
+        test_accuracies.append((start_epoch, test_accuracy))
+        val_losses.append((start_epoch, val_loss))
+        val_accuracies.append((start_epoch, val_accuracy))
+        try:
+            for epoch in range(start_epoch, EPOCHS + 1):
+                train_loss = train(model, device, train_loader, optimizer, epoch, PRINT_INTERVAL)
+                test_loss, test_accuracy = test(model, device, test_loader)
+                val_loss, val_accuracy = test(model, device, val_loader)
+                val_losses.append((start_epoch, val_loss))
+                val_accuracies.append((start_epoch, val_accuracy))
+                train_losses.append((epoch, train_loss))
+                test_losses.append((epoch, test_loss))
+                test_accuracies.append((epoch, test_accuracy))
+                pt_util.write_log(LOG_PATH + 'log.pkl', (train_losses, test_losses, test_accuracies))
+                model.save_best_model(test_accuracy, LOG_PATH + '%03d.pt' % epoch)
 
 
-except KeyboardInterrupt as ke:
-    print('Interrupted')
-except:
-    import traceback
-    traceback.print_exc()
-finally:
-    model.save_model(LOG_PATH + '%03d.pt' % epoch, 0)
-    ep, val = zip(*train_losses)
-    pt_util.plot(ep, val, 'Train loss', 'Epoch', 'Error')
-    ep, val = zip(*test_losses)
-    pt_util.plot(ep, val, 'Test loss', 'Epoch', 'Error')
-    ep, val = zip(*test_accuracies)
-    pt_util.plot(ep, val, 'Test accuracy', 'Epoch', 'Error')
+        except KeyboardInterrupt as ke:
+            print('Interrupted')
+        except:
+            import traceback
+            traceback.print_exc()
+        finally:
+            ep, val = zip(*train_losses)
+            pt_util.plot(ep, val, 'Train loss', 'Epoch', 'Error')
+            ep, val = zip(*test_losses)
+            pt_util.plot(ep, val, 'Test loss', 'Epoch', 'Error')
+            ep, val = zip(*test_accuracies)
+            pt_util.plot(ep, val, 'Test accuracy', 'Epoch', 'Error')
+            ep, val = zip(*val_accuracies)
+            return max(val)
+
+
+network_run('monocolor_new', True, 88, 0.020711, 0.001108, 15, '8.1', __name__)
